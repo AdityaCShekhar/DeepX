@@ -44,11 +44,13 @@ class OpenRouterChatProvider:
         model: str = DEFAULT_MODEL,
         timeout: int = 600,
         base_url: str = OPENROUTER_URL,
+        session_id: str | None = None,
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         self.model = model
         self.timeout = timeout
         self.base_url = base_url.rstrip("/")
+        self.session_id = session_id
         if not self.api_key:
             raise OpenRouterError(
                 "OPENROUTER_API_KEY is not set. Create an OpenRouter key and "
@@ -71,6 +73,10 @@ class OpenRouterChatProvider:
             "messages": messages,
             "reasoning": {"enabled": True},
         }
+        if self.session_id:
+            # OpenRouter uses this as a sticky routing and observability key;
+            # conversation content remains managed locally by CodeSmith.
+            payload["session_id"] = self.session_id
         if tools:
             payload["tools"] = [
                 {"type": "function", "function": tool} for tool in tools
@@ -102,6 +108,7 @@ class OpenRouterChatProvider:
                 content=message.get("content") or "",
                 tool_calls=_tool_calls(message),
                 reasoning_details=message.get("reasoning_details"),
+                usage=data.get("usage") or {},
             )
         except (requests.exceptions.RequestException, ValueError, KeyError, TypeError) as exc:
             raise OpenRouterError(f"Chat request failed: {exc}") from exc

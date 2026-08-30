@@ -4,7 +4,7 @@ services:
   codesmith-cli:
     build: .
     environment:
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-(your_openrouter_api_key_here)}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required}
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
     volumes:
       - .:/work

@@ -279,19 +279,18 @@ changes.
 - [x] Add debug rendering for agent iterations, tool calls, and tool results.
 - [x] Add focused tests for agent continuation, path security, and command
   blocking.
-
-### In progress
-
-- [ ] Expand terminal rendering to cover model activity, edits, commands,
+- [x] Expand terminal rendering to cover model activity, edits, commands,
   tests, and final status in normal (non-debug) mode.
-- [ ] Install test dependencies and run the full unit/integration test suite.
+- [x] Declare test dependencies and run the full unit/integration test suite.
+- [x] Add context management with prioritization, large-file limits, explicit
+  `@file` references, repository metadata summaries, and bounded multi-turn
+  interactive history.
+- [x] Add OpenRouter-compatible Codex-style layered instructions, token-aware
+  context compaction, resumable sessions, context commands, reasoning-detail
+  replay, and provider-reported usage accounting.
 
 ### Not started
 
-- [ ] Add additional hosted-provider implementations, including DeepSeek,
-  behind the same provider interface.
-- [ ] Add context management with prioritization, large-file limits, and
-  repository metadata summaries.
 - [ ] Add targeted patch/edit support for existing files.
 - [ ] Add automatic test/build/type-check/lint selection based on repository
   conventions.

@@ -7,8 +7,10 @@ import asyncio
 import os
 import re
 import shutil
+import sys
 import textwrap
 from pathlib import Path
+from typing import Any, TextIO
 
 import requests
 from colorama import just_fix_windows_console
@@ -22,7 +24,7 @@ from prompt_toolkit.styles import Style
 
 from .agent import AgentRuntime, default_registry
 from .config import load_config
-from .context import load_rules
+from .context import ContextManager, ConversationSession, SessionStore
 from .llm import DEFAULT_MODEL, OpenRouterChatProvider, OpenRouterError
 from .tools import RepositoryTools
 
@@ -132,13 +134,161 @@ def _tool_status(name: str, arguments: dict) -> str:
         return f"Listing files in {arguments.get('path', '.')}"
     if name == "search_code":
         return f"Searching for {arguments.get('query', 'code')}"
+    if name == "write_file":
+        return f"Editing {arguments.get('path', 'file')}"
     if name == "run_command":
-        return f"Running: {arguments.get('command', '')}"
+        command = arguments.get("command", "")
+        action = "Running tests" if _is_test_command(command) else "Running command"
+        return f"{action}: {command}"
     if name == "git_status":
         return "Checking git status"
     if name == "git_diff":
         return "Reading git diff"
     return f"Using {name}"
+
+
+def _is_test_command(command: str) -> bool:
+    """Return whether a shell command invokes a conventional test runner."""
+    normalized = " ".join(command.lower().split())
+    patterns = (
+        r"(^|[;&|]\s*)(py\.test|pytest|tox|nox)(\s|$)",
+        r"(^|[;&|]\s*)python3?\s+-m\s+(pytest|unittest)(\s|$)",
+        r"(^|[;&|]\s*)(npm|pnpm|yarn)\s+(run\s+)?test(\s|$)",
+        r"(^|[;&|]\s*)cargo\s+test(\s|$)",
+        r"(^|[;&|]\s*)go\s+test(\s|$)",
+        r"(^|[;&|]\s*)(mvn|gradle|\./gradlew)\s+.*\btest\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+class TerminalRenderer:
+    """Render agent events in both normal and debug terminal modes."""
+
+    def __init__(
+        self,
+        debug: bool = False,
+        show_work: bool = True,
+        stream: TextIO | None = None,
+    ) -> None:
+        self.debug = debug
+        self.show_work = show_work
+        self.stream = stream or sys.stdout
+        self.activity_visible = False
+        self.is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
+
+    def _print(self, message: str = "", *, end: str = "\n") -> None:
+        print(message, end=end, file=self.stream, flush=True)
+
+    def clear_activity(self) -> None:
+        if self.activity_visible and self.is_tty:
+            self._print("\r\033[2K", end="")
+        self.activity_visible = False
+
+    @staticmethod
+    def _result_label(name: str, arguments: dict[str, Any], ok: bool) -> str:
+        marker = "✓" if ok else "✗"
+        path = arguments.get("path", "file")
+        if name == "read_file":
+            return f"{marker} {'Read' if ok else 'Could not read'} {path}"
+        if name == "list_files":
+            return f"{marker} {'Listed files' if ok else 'Could not list files'}"
+        if name == "search_code":
+            return f"{marker} {'Search complete' if ok else 'Search failed'}"
+        if name == "write_file":
+            return f"{marker} {'Updated' if ok else 'Edit failed for'} {path}"
+        if name == "git_status":
+            return f"{marker} {'Git status checked' if ok else 'Git status failed'}"
+        if name == "git_diff":
+            return f"{marker} {'Git diff inspected' if ok else 'Git diff failed'}"
+        return f"{marker} {name} {'completed' if ok else 'failed'}"
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        kind = event.get("event")
+        if kind == "iteration":
+            if self.debug:
+                self._print(f"\n[iteration {event.get('iteration', '?')}]")
+            return
+
+        if kind == "model_start":
+            if not self.show_work:
+                return
+            if self.is_tty:
+                self._print("\r\033[2KModel is reasoning...", end="")
+                self.activity_visible = True
+            else:
+                self._print("Model is reasoning...")
+            return
+
+        if kind == "model_result":
+            self.clear_activity()
+            if self.debug:
+                count = event.get("tool_call_count", 0)
+                self._print(f"Model response received ({count} tool call{'s' if count != 1 else ''})")
+            return
+
+        if kind == "model_error":
+            self.clear_activity()
+            self._print("✗ Model request failed")
+            return
+
+        if kind == "tool_call":
+            self.clear_activity()
+            if self.show_work:
+                arguments = event.get("arguments")
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                self._print(f"→ {_tool_status(str(event.get('name') or 'tool'), arguments)}")
+            return
+
+        if kind == "tool_result":
+            if not self.show_work and not self.debug:
+                return
+            name = str(event.get("name") or "tool")
+            arguments = event.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = {}
+            ok = bool(event.get("ok"))
+            metadata = event.get("metadata") or {}
+            if name == "run_command":
+                command = str(arguments.get("command", ""))
+                is_test = _is_test_command(command)
+                subject = "Tests" if is_test else "Command"
+                outcome = "passed" if ok and is_test else "completed" if ok else "failed"
+                details = []
+                if metadata.get("exit_code") is not None:
+                    details.append(f"exit {metadata['exit_code']}")
+                if metadata.get("duration_ms") is not None:
+                    details.append(f"{metadata['duration_ms']} ms")
+                suffix = f" ({', '.join(details)})" if details else ""
+                self._print(f"{'✓' if ok else '✗'} {subject} {outcome}{suffix}")
+            else:
+                self._print(self._result_label(name, arguments, ok))
+            if self.debug and event.get("output"):
+                self._print(str(event["output"])[:500])
+            return
+
+        if kind == "completed":
+            self.clear_activity()
+            iterations = event.get("iteration", 0)
+            noun = "iteration" if iterations == 1 else "iterations"
+            self._print(f"✓ Completed in {iterations} {noun}")
+            return
+
+        if kind == "stopped":
+            self.clear_activity()
+            reason = str(event.get("reason", "unknown reason")).replace("_", " ")
+            self._print(f"✗ Stopped: {reason}")
+            return
+
+        if kind == "context_compaction_start":
+            self.clear_activity()
+            self._print("→ Compacting older conversation context")
+            return
+
+        if kind == "context_compaction_result":
+            marker = "✓" if event.get("ok") else "!"
+            method = event.get("method", "model summary")
+            self._print(f"{marker} Context compacted ({method})")
 
 
 def _free_models(args: argparse.Namespace) -> list[dict]:
@@ -242,6 +392,12 @@ class _CommandCompleter(Completer):
         if " " not in text:
             commands = {
                 "/models": "Browse and select an OpenRouter model",
+                "/status": "Show session and context usage",
+                "/compact": "Summarize older conversation context",
+                "/mention": "Attach a file to the next prompt",
+                "/resume": "Resume a saved repository session",
+                "/new": "Start a new conversation",
+                "/clear": "Clear the current conversation",
                 "/exit": "Exit CodeSmith",
                 "/help": "Show interactive commands",
             }
@@ -269,64 +425,178 @@ class _CommandCompleter(Completer):
                 )
 
 
-async def run_request(args: argparse.Namespace, request: str) -> int:
+async def run_request(
+    args: argparse.Namespace,
+    request: str,
+    session: ConversationSession | None = None,
+    session_store: SessionStore | None = None,
+) -> int:
     root = Path(args.repository).resolve()
-    repository = RepositoryTools(root, confirm=None if args.auto else _confirmation)
+    config = load_config(root)
+    context_manager = ContextManager(root, config.get("context"))
+    repository = RepositoryTools(
+        root,
+        confirm=None if args.auto else _confirmation,
+        max_read_chars=context_manager.limits.max_file_chars,
+    )
     registry = default_registry(repository)
-    provider = OpenRouterChatProvider(args.api_key, args.model, args.timeout, args.url)
-    show_work = args.debug or args.show_work
-    working_visible = False
+    provider = OpenRouterChatProvider(
+        args.api_key,
+        args.model,
+        args.timeout,
+        args.url,
+        session_id=session.session_id if session else None,
+    )
+    # Normal mode reports meaningful progress too; debug mode adds raw result
+    # previews and iteration details.
+    renderer = TerminalRenderer(debug=args.debug, show_work=True)
 
-    def render(event):
-        nonlocal working_visible
-        if not show_work:
-            return
-        if event["event"] == "tool_call":
-            if working_visible:
-                print("\r\033[2K", end="", flush=True)
-                working_visible = False
-            print(f"{_tool_status(event['name'], event['arguments'])}", flush=True)
-        elif event["event"] == "tool_result" and args.debug:
-            status = "ok" if event["ok"] else "failed"
-            marker = "✓" if status == "ok" else "✗"
-            print(f"{marker} {event['name']} {status}", flush=True)
-            print(event["output"][:500])
-        elif event["event"] == "iteration" and args.debug:
-            print(f"\n[iteration {event['iteration']}]", flush=True)
-        elif event["event"] == "iteration":
-            print("\r\033[2KWorking...", end="", flush=True)
-            working_visible = True
-        elif event["event"] == "completed" and working_visible:
-            print("\r\033[2K", end="", flush=True)
-            working_visible = False
-
-    rules = load_rules(root)
-    system_prompt = DEFAULT_AGENT_PROMPT
-    if rules:
-        system_prompt += f"\n\nRepository-specific instructions:\n{rules}"
+    system_prompt = context_manager.build_system_prompt(DEFAULT_AGENT_PROMPT)
+    effective_request = (
+        session.apply_pending_references(request, consume=False) if session else request
+    )
     try:
         state = await AgentRuntime(
             provider,
             registry,
             args.max_iterations,
-            event_handler=render,
-        ).run(request, system_prompt=system_prompt)
+            event_handler=renderer,
+            message_preparer=context_manager.prepare_messages,
+        ).run(
+            effective_request,
+            system_prompt=system_prompt,
+            history=session.history if session else None,
+            files_read=session.files_read if session else None,
+            files_modified=session.files_modified if session else None,
+            context_summary=session.summary if session else None,
+        )
     except OpenRouterError as exc:
-        if working_visible:
-            print("\r\033[2K", end="", flush=True)
+        renderer.clear_activity()
         print(f"\nOpenRouter request failed: {exc}")
         if "rate limit" in str(exc).lower() or "429" in str(exc):
             print("Free-model quota is exhausted. Wait for the reset or add OpenRouter credits.")
         else:
             print("Use /models and select a model marked 'Tool calling supported' for repository tasks.")
         return 1
+    if session is not None:
+        session.pending_references.clear()
+        session.repository = str(root)
+        session.model = args.model
+        session.update(state, context_manager)
+        if session.needs_compaction():
+            renderer({"event": "context_compaction_start"})
+            try:
+                await session.compact(provider, context_manager)
+                renderer(
+                    {
+                        "event": "context_compaction_result",
+                        "ok": True,
+                        "method": "OpenRouter model summary",
+                    }
+                )
+            except (OpenRouterError, ValueError) as exc:
+                session.compact_without_model(context_manager)
+                renderer(
+                    {
+                        "event": "context_compaction_result",
+                        "ok": False,
+                        "method": "local fallback",
+                    }
+                )
+                if args.debug:
+                    print(f"Compaction model request failed: {exc}")
+        if session_store is not None:
+            try:
+                session_store.save(session)
+            except OSError as exc:
+                print(f"Warning: could not save session: {exc}")
     if args.debug:
         print(f"Iterations: {state.iteration}")
         print(f"Tool calls: {len(state.tool_calls)}")
         print(f"Stop reason: {state.stop_reason}")
+        print(f"Tokens: {state.input_tokens} input, {state.output_tokens} output")
     print("\n" + "─" * 60)
     print(_format_response(state.final_response or "CodeSmith finished without a final response."))
     return 0 if state.stop_reason == "completed" else 1
+
+
+async def _compact_conversation(
+    args: argparse.Namespace,
+    conversation: ConversationSession,
+    context_manager: ContextManager,
+) -> tuple[bool, str]:
+    """Run portable semantic compaction through a normal OpenRouter request."""
+    if not conversation.needs_compaction() and not conversation.prepare_for_forced_compaction(
+        context_manager
+    ):
+        return False, "There is not enough conversation context to compact."
+    provider = OpenRouterChatProvider(
+        args.api_key,
+        args.model,
+        args.timeout,
+        args.url,
+        session_id=conversation.session_id,
+    )
+    try:
+        await conversation.compact(provider, context_manager)
+        return True, "Conversation context compacted with an OpenRouter model summary."
+    except (OpenRouterError, ValueError) as exc:
+        conversation.compact_without_model(context_manager)
+        return True, f"Conversation context compacted locally ({exc})."
+
+
+def _show_context_status(
+    conversation: ConversationSession,
+    context_manager: ContextManager,
+) -> None:
+    estimated = conversation.estimated_context_tokens(context_manager)
+    maximum = context_manager.limits.max_tokens
+    percentage = min(100.0, estimated * 100 / maximum) if maximum else 0.0
+    print("\nSession status:")
+    print(f"  ID: {conversation.session_id}")
+    print(f"  Model: {conversation.model or 'not used yet'}")
+    print(
+        f"  Active context: approximately {estimated:,}/{maximum:,} tokens "
+        f"({percentage:.0f}%)"
+    )
+    print(
+        f"  OpenRouter usage: {conversation.input_tokens:,} input, "
+        f"{conversation.output_tokens:,} output tokens"
+    )
+    print(f"  Compacted summary: {'yes' if conversation.summary else 'no'}")
+    print(f"  Files read: {len(conversation.files_read)}")
+    print(f"  Files modified: {len(conversation.files_modified)}\n")
+
+
+def _resume_conversation(
+    store: SessionStore,
+    prompt_session: PromptSession,
+    request: str,
+) -> ConversationSession | None:
+    session_id = request.partition(" ")[2].strip()
+    sessions = store.list()
+    if not sessions:
+        print("No saved sessions exist for this repository.")
+        return None
+    if not session_id:
+        print("\nRecent sessions:")
+        for saved in sessions[:10]:
+            summary = saved.summary.replace("\n", " ")[:60] or "no compacted summary"
+            print(f"  {saved.session_id}  {saved.updated_at}  {summary}")
+        try:
+            session_id = prompt_session.prompt(
+                "Session ID (Enter for most recent): "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if not session_id:
+            return sessions[0]
+    try:
+        return store.load(session_id)
+    except ValueError as exc:
+        print(exc)
+        return None
 
 
 def interactive_loop(args: argparse.Namespace) -> None:
@@ -334,6 +604,11 @@ def interactive_loop(args: argparse.Namespace) -> None:
     print("Type /help for commands.\n")
     args.show_work = True
     models = _free_models(args)
+    root = Path(args.repository).resolve()
+    config = load_config(root)
+    context_manager = ContextManager(root, config.get("context"))
+    conversation_store = SessionStore(root)
+    conversation = ConversationSession(repository=str(root), model=args.model)
 
     key_bindings = KeyBindings()
 
@@ -367,7 +642,10 @@ def interactive_loop(args: argparse.Namespace) -> None:
     })
 
     def bottom_toolbar():
-        return f" Model: {args.model}  ·  /models switch model  ·  /help  ·  /exit "
+        return (
+            f" Model: {args.model}  ·  /status context  ·  /compact  ·  "
+            "/new  ·  /help  ·  /exit "
+        )
 
     session = PromptSession(
         history=FileHistory(str(Path.home() / ".codesmith_history")),
@@ -392,14 +670,75 @@ def interactive_loop(args: argparse.Namespace) -> None:
         if request == "/help":
             print("\nCommands:")
             print("  /models       Browse and select a free OpenRouter model")
+            print("  /status       Show session ID, context, and token usage")
+            print("  /compact      Summarize older context with the active model")
+            print("  /mention PATH Attach a repository file to the next prompt")
+            print("  /resume [ID]  Resume a saved repository session")
+            print("  /new          Start a new saved conversation")
+            print("  /clear        Clear the current conversation")
             print("  /help         Show this help")
             print("  /exit         Exit CodeSmith\n")
             continue
         if request == "/models" or request.startswith("/models "):
             _select_model(args, session, request)
+            conversation.model = args.model
+            continue
+        if request == "/status":
+            _show_context_status(conversation, context_manager)
+            continue
+        if request == "/compact":
+            print("Compacting conversation context...")
+            changed, message = asyncio.run(
+                _compact_conversation(args, conversation, context_manager)
+            )
+            print(message)
+            if changed:
+                try:
+                    conversation_store.save(conversation)
+                except OSError as exc:
+                    print(f"Warning: could not save session: {exc}")
+            continue
+        if request.startswith("/mention "):
+            path = request.partition(" ")[2].strip()
+            try:
+                conversation.queue_reference(path, context_manager)
+                print(f"Attached @{path} to the next prompt.")
+            except ValueError as exc:
+                print(exc)
+            continue
+        if request == "/resume" or request.startswith("/resume "):
+            resumed = _resume_conversation(conversation_store, session, request)
+            if resumed is not None:
+                conversation = resumed
+                if conversation.model:
+                    args.model = conversation.model
+                print(f"Resumed session {conversation.session_id}.")
+            continue
+        if request == "/new":
+            try:
+                conversation_store.save(conversation)
+            except OSError as exc:
+                print(f"Warning: could not save session: {exc}")
+            conversation = ConversationSession(repository=str(root), model=args.model)
+            print(f"Started session {conversation.session_id}.")
+            continue
+        if request == "/clear":
+            conversation.clear()
+            try:
+                conversation_store.save(conversation)
+            except OSError as exc:
+                print(f"Warning: could not save session: {exc}")
+            print("Conversation context cleared.")
             continue
         if request:
-            asyncio.run(run_request(args, request))
+            asyncio.run(
+                run_request(
+                    args,
+                    request,
+                    session=conversation,
+                    session_store=conversation_store,
+                )
+            )
 
 
 def build_parser() -> argparse.ArgumentParser:

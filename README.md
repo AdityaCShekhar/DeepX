@@ -168,6 +168,62 @@ prompt only:
 > Write tests for @utils.py and @models.py
 ```
 
+Interactive sessions retain recent questions, final answers, OpenRouter
+reasoning details, and relevant file state, so follow-up prompts can refer to
+earlier work. CodeSmith uses token-based budgets and automatically summarizes
+older turns when the configured compaction threshold is reached. The summary is
+created with a normal OpenRouter model request; if that request fails, CodeSmith
+uses a deterministic local fallback.
+
+CodeSmith saves sessions under `~/.codesmith/sessions/`, grouped by repository.
+Use the context commands to manage them:
+
+```text
+/status            Show context and OpenRouter token usage
+/compact           Summarize older context now
+/mention PATH      Attach a file to the next prompt
+/resume [ID]       Resume a saved repository session
+/new               Start a new saved conversation
+/clear             Clear the current conversation
+```
+
+`/compact` makes an additional OpenRouter request and may consume billable or
+quota-limited tokens. CodeSmith does not call OpenAI's provider-specific
+`/responses/compact` endpoint.
+
+### Project instructions
+
+CodeSmith loads instruction files in increasing precedence:
+
+1. `$CODESMITH_HOME/AGENTS.override.md`, or `$CODESMITH_HOME/AGENTS.md`
+   (`CODESMITH_HOME` defaults to `~/.codesmith`).
+2. The legacy repository `.codesmith/rules.md`, when present.
+3. `AGENTS.override.md` or `AGENTS.md` from the repository root down to the
+   active working directory. A configured fallback filename can be used when
+   neither standard name exists.
+
+Instructions closer to the working directory appear later in the prompt and
+therefore take precedence. Combined project instructions default to a 32 KiB
+budget.
+
+Context settings can be overridden in `.codesmith/config.yaml`:
+
+```yaml
+context:
+  max_tokens: 15000
+  max_message_tokens: 4500
+  max_tool_result_tokens: 3000
+  max_summary_tokens: 2000
+  compact_threshold: 0.8
+  keep_recent_turns: 2
+  project_doc_max_bytes: 32768
+  project_doc_fallback_filenames: []
+```
+
+OpenRouter models use different tokenizers, so pre-request accounting is a
+conservative estimate. `/status` also reports the actual input and output usage
+returned by OpenRouter after completed requests.
+
 ### Utilities
 
 **List available models:**
