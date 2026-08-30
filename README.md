@@ -231,11 +231,12 @@ returned by OpenRouter after completed requests.
 /models
 ```
 
-`/models` loads the current OpenRouter catalog and lists all free models. Models
-show their context size and whether tool calling is supported. Select one by
-number, or type `/models <number>` to select it directly. For repository tasks
-that need file inspection or writing, choose a model marked `Tool calling
-supported`.
+`/models` loads the current OpenRouter catalog and lists `:free` model variants
+that report text output and tool-calling support. Zero-priced previews and media
+models are excluded because they are not necessarily free chat-agent endpoints.
+Select one by number, or type `/models <number>` to select it directly. The
+`openrouter/free` entry lets OpenRouter choose an available free model that
+supports the tools included in the request.
 
 The interactive prompt uses the legacy CodeSmith layout with a cyan theme. Type
 `/` to open command suggestions, then press Enter to accept the first suggestion.
@@ -473,12 +474,14 @@ service fee. Limits are account-specific and can change.
 
 If the daily limit is reached, wait for the reset or use an account with
 available credits. A `429` response is handled and displayed as a friendly
-quota message by CodeSmith.
+message explaining that the account or the selected provider may be rate
+limited.
 
 ### Slow responses
 
 - Reduce context file size
-- Try another model from `/models`, or use `codesmith --model openrouter/free`
+- Try another model from `/models`, or use `/models openrouter/free`. OpenRouter's
+  free router filters candidates for required capabilities such as tool calling.
 - Check your OpenRouter model and account limits
 - Reduce temperature for faster inference (in code)
 

@@ -1,9 +1,12 @@
 import asyncio
 import io
 
+import pytest
+
+from codesmith import runtime_cli
 from codesmith.agent import AgentRuntime, ModelResponse, default_registry
 from codesmith.context import discover_repository, load_rules
-from codesmith.llm import OpenRouterChatProvider
+from codesmith.llm import OpenRouterChatProvider, OpenRouterError
 from codesmith.runtime_cli import TerminalRenderer
 from codesmith.tools import Permission, RepositoryTools
 
@@ -142,6 +145,79 @@ def test_openrouter_provider_sends_session_id_and_records_usage(monkeypatch):
 
     assert captured["payload"]["session_id"] == "session_1234"
     assert response.usage["prompt_tokens"] == 11
+
+
+def test_openrouter_429_does_not_assume_free_quota_is_exhausted():
+    class Response:
+        status_code = 429
+        text = ""
+
+        def raise_for_status(self):
+            import requests
+
+            raise requests.exceptions.HTTPError("429")
+
+        def json(self):
+            return {"error": {"code": 429, "message": "Provider returned error"}}
+
+    with pytest.raises(OpenRouterError, match="OpenRouter rate limit reached") as error:
+        OpenRouterChatProvider._raise_for_status(Response())
+
+    assert "free-model" not in str(error.value)
+
+
+def test_model_picker_only_includes_tool_capable_free_models(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": "nvidia/safety:free",
+                        "name": "Safety classifier",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                        "supported_parameters": [],
+                    },
+                    {
+                        "id": "nvidia/coder:free",
+                        "name": "Coding model",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                        "supported_parameters": ["tools"],
+                        "context_length": 131_072,
+                    },
+                    {
+                        "id": "google/preview-coder",
+                        "name": "Preview coder",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                        "supported_parameters": ["tools"],
+                    },
+                ]
+            }
+
+    captured = {}
+
+    def fake_get(url, headers, timeout):
+        captured["url"] = url
+        return Response()
+
+    monkeypatch.setattr(runtime_cli, "_FREE_MODELS_CACHE", None)
+    monkeypatch.setattr(runtime_cli.requests, "get", fake_get)
+    args = type(
+        "Args",
+        (),
+        {"url": "https://openrouter.ai/api/v1", "api_key": "key", "timeout": 30},
+    )()
+
+    models = runtime_cli._free_models(args)
+    model_ids = {model["id"] for model in models}
+
+    assert "supported_parameters=tools" in captured["url"]
+    assert "nvidia/safety:free" not in model_ids
+    assert "nvidia/coder:free" in model_ids
+    assert "google/preview-coder" not in model_ids
+    assert "openrouter/free" in model_ids
 
 
 def test_normal_renderer_reports_edits_tests_and_final_status():

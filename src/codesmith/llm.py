@@ -126,7 +126,7 @@ class OpenRouterChatProvider:
                     error_message = error.get("message")
                     remedy = error.get("remedy_hint")
                     if response.status_code == 429:
-                        message = "OpenRouter free-model rate limit reached"
+                        message = "OpenRouter rate limit reached"
                         if error_message:
                             message += f": {error_message}"
                         if remedy:

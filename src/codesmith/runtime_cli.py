@@ -35,6 +35,12 @@ just_fix_windows_console()
 
 FALLBACK_FREE_MODELS = [
     {
+        "id": "openrouter/free",
+        "name": "OpenRouter: Free Models Router",
+        "description": "Automatically selects a free model with tool calling",
+        "context": "200K",
+    },
+    {
         "id": "openai/gpt-oss-20b:free",
         "name": "OpenAI: gpt-oss-20b (free)",
         "description": "Coding, reasoning, tool use, function calling, and structured outputs",
@@ -298,7 +304,7 @@ def _free_models(args: argparse.Namespace) -> list[dict]:
         return _FREE_MODELS_CACHE
     try:
         response = requests.get(
-            f"{args.url.rstrip('/')}/models",
+            f"{args.url.rstrip('/')}/models?supported_parameters=tools",
             headers={"Authorization": f"Bearer {args.api_key}"},
             timeout=min(args.timeout, 30),
         )
@@ -306,23 +312,26 @@ def _free_models(args: argparse.Namespace) -> list[dict]:
         models = []
         for model in response.json().get("data", []):
             model_id = model.get("id", "")
-            pricing = model.get("pricing") or {}
-            try:
-                is_free = model_id.endswith(":free") or (
-                    pricing and float(pricing.get("prompt", 1)) == 0
-                    and float(pricing.get("completion", 1)) == 0
-                )
-            except (TypeError, ValueError):
-                is_free = model_id.endswith(":free")
-            if not is_free:
+            # OpenRouter's documented free access is the :free variant. A
+            # zero-priced catalog entry may still be a preview/media endpoint
+            # that is not intended for free chat-agent use.
+            if not model_id.endswith(":free"):
                 continue
             parameters = model.get("supported_parameters") or []
+            if "tools" not in parameters:
+                continue
+            architecture = model.get("architecture") or {}
+            output_modalities = architecture.get("output_modalities") or []
+            if output_modalities and "text" not in output_modalities:
+                continue
             models.append({
                 "id": model_id,
                 "name": model.get("name") or model_id,
-                "description": "Tool calling supported" if "tools" in parameters else "Free model",
+                "description": "Tool calling supported",
                 "context": _context_label(model.get("context_length")),
             })
+        if not any(model["id"] == "openrouter/free" for model in models):
+            models.append(dict(FALLBACK_FREE_MODELS[0]))
         _FREE_MODELS_CACHE = sorted(models, key=lambda item: item["name"].lower())
     except (requests.exceptions.RequestException, ValueError, TypeError, KeyError):
         print("Could not fetch the OpenRouter model catalog; using the fallback list.")
@@ -474,7 +483,11 @@ async def run_request(
         renderer.clear_activity()
         print(f"\nOpenRouter request failed: {exc}")
         if "rate limit" in str(exc).lower() or "429" in str(exc):
-            print("Free-model quota is exhausted. Wait for the reset or add OpenRouter credits.")
+            print(
+                "The selected provider may be temporarily saturated, or your "
+                "OpenRouter free allowance may be exhausted. Retry later, select "
+                "openrouter/free with /models openrouter/free, or add credits."
+            )
         else:
             print("Use /models and select a model marked 'Tool calling supported' for repository tasks.")
         return 1
