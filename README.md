@@ -1,550 +1,309 @@
-# CodeSmith - Code Generation CLI
+# CodeSmith
 
-A powerful CLI tool for code generation using OpenRouter's API. Built with Python, this tool provides an interactive REPL for generating code, reading, and writing files.
+CodeSmith is an OpenRouter-powered coding agent that works inside a repository.
+It can inspect files, search code, review Git changes, edit files, and run
+development commands through an interactive terminal.
 
 ## Features
 
-- 🚀 **Code Generation**: Generate code from natural language prompts
-- 📝 **File Operations**: Read, write, and manage files seamlessly
-- 🧠 **Context Injection**: Include file contents in prompts for context-aware generation
-- 📊 **Streaming Support**: Real-time token streaming from OpenRouter
-- 🎯 **Multiple Models**: Support for OpenRouter models, including free models
-- 🎨 **Clean Output**: Formatted responses with color-coded sections
-- 🐳 **Docker Ready**: Easy deployment with Docker and Docker Compose
-
-## Architecture
-
-```
-CodeSmith/
-├── src/codesmith/          # Installable Python package
-│   ├── cli.py              # Interactive CLI and command handling
-│   ├── llm.py              # OpenRouter API client
-│   ├── tools.py            # File and context utilities
-│   └── batch.py            # Batch-generation entry point
-├── examples/               # Runnable examples and sample input
-├── docs/                   # Project documentation
-├── scripts/                # Setup and maintenance helpers
-├── codesmith               # macOS/Linux launcher
-├── codesmith.cmd           # Windows launcher
-├── pyproject.toml          # Package metadata and entry points
-├── Dockerfile
-└── docker-compose.yml
-```
-
-### Components
-
-- **src/codesmith/cli.py**: Interactive REPL with color-coded output and command handling
-- **src/codesmith/llm.py**: OpenRouter API client with tool calling, reasoning, streaming, and error handling
-- **src/codesmith/tools.py**: File I/O and context injection utilities
-- **src/codesmith/batch.py**: Non-interactive batch generation
-- **pyproject.toml**: Package metadata, dependencies, and CLI entry points
+- Repository-scoped file listing, reading, searching, and writing
+- Git status and diff inspection
+- Development command and test execution with confirmation for sensitive actions
+- OpenRouter reasoning and tool calling
+- Interactive workflows and one-shot task shortcuts
+- Free, tool-capable OpenRouter model picker
+- Token-aware multi-turn context with automatic compaction
+- Saved, repository-specific sessions that can be resumed later
+- Layered project instructions from `AGENTS.md` files
+- macOS, Linux, Windows, and Docker launch options
 
 ## Requirements
 
-- Python 3.8+
-- An OpenRouter API key (free models are supported)
+- Python 3.8 or newer
+- An [OpenRouter](https://openrouter.ai/) API key
+- Git for status and diff tools
+- [ripgrep](https://github.com/BurntSushi/ripgrep) for repository search
+- Docker with Compose (optional; the macOS/Linux launcher uses it automatically
+  when available)
 
-## Quick Command Setup
+## Installation
 
-To use `codesmith` from anywhere on macOS or Linux:
+Clone the repository and install the package in editable mode:
 
 ```bash
-# Option 1: Add to PATH (recommended)
-export PATH="/path/to/CodeSmith:$PATH"
-
-# Add to ~/.zshrc or ~/.bashrc to make permanent:
-echo 'export PATH="/path/to/CodeSmith:$PATH"' >> ~/.zshrc
-
-# Or symlink to /usr/local/bin
-sudo ln -sf /path/to/CodeSmith/codesmith /usr/local/bin/codesmith
+git clone https://github.com/AdityaCShekhar/DeepX.git CodeSmith
+cd CodeSmith
+python3 -m pip install -e .
 ```
 
-Then simply type:
+Set your OpenRouter API key:
+
 ```bash
-codesmith                    # Interactive mode
-codesmith -p "Your prompt"   # Single command
+export OPENROUTER_API_KEY="your-key"
 ```
 
-On Windows, add the CodeSmith repository directory to your User `PATH` in
-Settings, restart Windows Terminal, and run:
+On PowerShell:
 
 ```powershell
-codesmith
-codesmith -p "Your prompt"
+$env:OPENROUTER_API_KEY = "your-key"
 ```
 
-Windows automatically uses `codesmith.cmd`; macOS and Linux use `codesmith`.
+The editable installation provides `codesmith` and `codesmith-batch` commands.
 
-## Installation & Setup
+### Repository launchers
 
-### Option 1: OpenRouter API (Recommended)
+The repository also includes `codesmith` for macOS/Linux and `codesmith.cmd` for
+Windows. Add the cloned repository directory to `PATH` if you want to invoke
+these launchers from anywhere.
 
-The easiest way to run everything together:
-
-```bash
-# Clone/navigate to the project
-cd /path/to/CodeSmith
-
-# Configure your OpenRouter API key
-export OPENROUTER_API_KEY="your-key"
-
-# Run the CLI
-codesmith
-```
-
-### Option 2: Local Installation
-
-1. **Install Python dependencies:**
-   ```bash
-   python3 -m pip install -e .
-   ```
-
-2. **Set your API key and run the CLI:**
-   ```bash
-   export OPENROUTER_API_KEY="your-key"
-   codesmith
-   ```
+On macOS/Linux, the launcher uses Docker Compose when it is available and falls
+back to the local Python source otherwise. The Windows launcher runs the local
+Python source.
 
 ## Usage
 
-### Interactive REPL Mode
+Start an interactive session in the current repository:
 
 ```bash
 codesmith
 ```
 
-Or:
+Target a different repository:
+
 ```bash
-codesmith
+codesmith -C /path/to/project
 ```
 
-### Single Prompt Mode
+Use a specific OpenRouter model:
 
 ```bash
-codesmith -p "Write a Python function to calculate fibonacci"
-```
-
-Or:
-```bash
-codesmith -p "Write a Python function to calculate fibonacci"
-```
-
-### Custom OpenRouter URL and Model
-
-```bash
-export OPENROUTER_API_KEY="your-key"
+codesmith --model openrouter/free
 codesmith --model openai/gpt-oss-20b:free
 ```
 
-Or:
+Convenience task forms are also available:
+
 ```bash
-codesmith --model openai/gpt-oss-20b:free
+codesmith review
+codesmith fix
+codesmith explain
 ```
 
-## Commands
+CodeSmith asks before file writes and commands that are not on its safe
+development-command list. `--auto` skips those confirmation prompts, while
+destructive commands covered by the built-in safety policy remain blocked.
 
-All commands start with `/`. Here are the available commands:
-
-### Code Generation
-Simply type your prompt without a `/` prefix:
-```
-> Write a Python function to reverse a string
-```
-
-### File Generation
-
-**Generate and write a file:**
-```
-/write <filename>
-```
-Then enter instructions for the code you want generated and saved.
-
-### File Context
-
-Mention files directly in a prompt. Their contents are included for that
-prompt only:
-```
-> Explain @filename.py and suggest improvements
-> Write tests for @utils.py and @models.py
-```
-
-Interactive sessions retain recent questions, final answers, OpenRouter
-reasoning details, and relevant file state, so follow-up prompts can refer to
-earlier work. CodeSmith uses token-based budgets and automatically summarizes
-older turns when the configured compaction threshold is reached. The summary is
-created with a normal OpenRouter model request; if that request fails, CodeSmith
-uses a deterministic local fallback.
-
-CodeSmith saves sessions under `~/.codesmith/sessions/`, grouped by repository.
-Use the context commands to manage them:
+### Command-line options
 
 ```text
-/status            Show context and OpenRouter token usage
-/compact           Summarize older context now
-/mention PATH      Attach a file to the next prompt
-/resume [ID]       Resume a saved repository session
-/new               Start a new saved conversation
-/clear             Clear the current conversation
+codesmith [OPTIONS]
+codesmith [OPTIONS] {review,fix,explain}
+
+  -C, --repository PATH     Repository root (default: current directory)
+  --url URL                 OpenRouter API base URL
+  --api-key KEY             API key; defaults to OPENROUTER_API_KEY
+  --model MODEL             OpenRouter model ID
+  --timeout SECONDS         OpenRouter request timeout
+  --max-iterations NUMBER   Maximum agent iterations
+  --auto                    Skip confirm-level operation prompts
+  --debug                   Show raw iteration, result, and token details
+  --show-work               Show repository activity (currently enabled by default)
 ```
 
-`/compact` makes an additional OpenRouter request and may consume billable or
-quota-limited tokens. CodeSmith does not call OpenAI's provider-specific
-`/responses/compact` endpoint.
+## Interactive commands
 
-### Project instructions
+Prompts without a slash are sent to the coding agent. The interactive terminal
+supports these commands:
+
+```text
+/models [NUMBER|ID]  Browse or select a free tool-capable OpenRouter model
+/status              Show the session ID, context size, and token usage
+/compact             Summarize older conversation context now
+/mention PATH        Attach a repository file to the next prompt
+/resume [ID]         List or resume a saved session for this repository
+/new                 Save the current session and start a new one
+/clear               Clear the current conversation context
+/help                Show interactive command help
+/exit                Exit CodeSmith
+```
+
+Files can also be referenced directly in a prompt:
+
+```text
+Explain @src/codesmith/context.py
+Compare @src/codesmith/agent.py and @src/codesmith/tools.py
+```
+
+Referenced files are limited to the active repository and are included only for
+that request. `/mention` queues a file for the next prompt.
+
+## Context and saved sessions
+
+Interactive sessions keep recent questions, answers, reasoning details, and
+relevant file state. When the configured token threshold is reached, CodeSmith
+summarizes older turns through a regular OpenRouter model request. If that
+request fails, it uses a deterministic local summary.
+
+Sessions are stored under `~/.codesmith/sessions/` and grouped by repository.
+The `/status`, `/compact`, `/resume`, `/new`, and `/clear` commands manage this
+state. `/compact` can consume additional OpenRouter quota or billable tokens.
+
+OpenRouter models use different tokenizers, so the active-context count is a
+conservative estimate. Provider-reported input and output usage is tracked
+separately and shown by `/status`.
+
+## Project instructions
 
 CodeSmith loads instruction files in increasing precedence:
 
-1. `$CODESMITH_HOME/AGENTS.override.md`, or `$CODESMITH_HOME/AGENTS.md`
-   (`CODESMITH_HOME` defaults to `~/.codesmith`).
-2. The legacy repository `.codesmith/rules.md`, when present.
+1. `$CODESMITH_HOME/AGENTS.override.md` or `$CODESMITH_HOME/AGENTS.md`.
+   `CODESMITH_HOME` defaults to `~/.codesmith`.
+2. The backward-compatible repository file `.codesmith/rules.md`, if present.
 3. `AGENTS.override.md` or `AGENTS.md` from the repository root down to the
-   active working directory. A configured fallback filename can be used when
-   neither standard name exists.
+   active working directory.
 
-Instructions closer to the working directory appear later in the prompt and
-therefore take precedence. Combined project instructions default to a 32 KiB
-budget.
+Instructions closer to the working directory appear later and take precedence.
+Combined project instructions have a default 32 KiB limit.
 
-Context settings can be overridden in `.codesmith/config.yaml`:
+## Configuration
+
+Repository settings can be placed in `.codesmith/config.yaml`. The current
+runtime reads the model ID, maximum iteration count, and context settings:
 
 ```yaml
+model:
+  model: openai/gpt-oss-20b:free
+
+agent:
+  max_iterations: 20
+
 context:
   max_tokens: 15000
   max_message_tokens: 4500
   max_tool_result_tokens: 3000
   max_summary_tokens: 2000
+  max_file_chars: 10000
+  max_referenced_files: 5
   compact_threshold: 0.8
   keep_recent_turns: 2
   project_doc_max_bytes: 32768
   project_doc_fallback_filenames: []
 ```
 
-OpenRouter models use different tokenizers, so pre-request accounting is a
-conservative estimate. `/status` also reports the actual input and output usage
-returned by OpenRouter after completed requests.
+The following environment variables are supported:
 
-### Utilities
-
-**List available models:**
-```
-/models
+```text
+OPENROUTER_API_KEY    OpenRouter API key
+OPENROUTER_BASE_URL  API base URL (default: https://openrouter.ai/api/v1)
+OPENROUTER_TIMEOUT   Request timeout in seconds (default: 600)
+CODESMITH_HOME       Global instructions and session-data directory
 ```
 
-`/models` loads the current OpenRouter catalog and lists `:free` model variants
-that report text output and tool-calling support. Zero-priced previews and media
-models are excluded because they are not necessarily free chat-agent endpoints.
-Select one by number, or type `/models <number>` to select it directly. The
-`openrouter/free` entry lets OpenRouter choose an available free model that
-supports the tools included in the request.
+Command-line values take precedence over environment variables and repository
+configuration where applicable.
 
-The interactive prompt uses the legacy CodeSmith layout with a cyan theme. Type
-`/` to open command suggestions, then press Enter to accept the first suggestion.
+## Batch generation
 
-**Show help:**
-```
-/help
-```
+`codesmith-batch` generates files directly without the repository-agent loop.
 
-**Exit:**
-```
-/exit
-```
-
-## Usage Examples
-
-### Example 1: Generate a Python Function
-
-```
-> Write a Python function to count vowels in a string
-
-⭐ Generating
-ℹ Temperature: 0.7 | Top-p: 0.9
-
-```python
-def count_vowels(s):
-    vowels = 'aeiouAEIOU'
-    return sum(1 for c in s if c in vowels)
-
-result = count_vowels('Hello World')
-print(result)  # Output: 3
-```
-```
-
-### Example 2: Generate Code with Context
-
-```
-@style.py
-
-> Generate a class that follows the patterns in the context file
-
-⭐ Generating
-ℹ Temperature: 0.7 | Top-p: 0.9
-
-[generates code following the style patterns]
-```
-
-### Example 3: Write Generated Code to File
-
-```
-> Write a function to parse CSV files
-
-[AI generates code]
-
-/write csv_parser.py
-
-✓ Successfully wrote 1245 bytes to csv_parser.py
-```
-
-### Example 4: Test the Generated Code
-
-```
-
-⭐ Running: python csv_parser.py --test
-STDOUT:
-All tests passed!
-```
-
-## Command-Line Options
+Generate one file:
 
 ```bash
-codesmith --help
-
-options:
-  -h, --help            show this help message and exit
-  --url URL              OpenRouter API base URL (default: https://openrouter.ai/api/v1)
-  --api-key API_KEY      OpenRouter API key (or OPENROUTER_API_KEY)
-  -m MODEL, --model MODEL
-                        Model name (default: openai/gpt-oss-20b:free)
-  -p PROMPT, --prompt PROMPT
-                        Single prompt to execute and exit
-  --no-stream           Disable streaming mode
+codesmith-batch quicksort.py "Write a quicksort implementation with tests"
 ```
 
-## Automation
-
-Generate and save code automatically without interactive mode!
-
-### Quick Automation Examples
-
-```bash
-# Single file generation
-codesmith-batch quicksort.py "Write a quicksort implementation"
-
-# Batch generation from JSON config
-codesmith-batch batch.json
-
-# Generates and saves files automatically!
-```
-
-### Batch Generation
-
-Create a `batch.json` file:
+Generate several files from JSON:
 
 ```json
 {
   "tasks": [
     {
       "output": "quicksort.py",
-      "prompt": "Write a quicksort algorithm with tests"
+      "prompt": "Write a quicksort implementation"
     },
     {
-      "output": "api.py",
-      "prompt": "Create a Flask REST API with CRUD endpoints"
-    },
-    {
-      "output": "tests.py",
-      "prompt": "Write comprehensive unit tests"
+      "output": "test_quicksort.py",
+      "prompt": "Write tests for quicksort.py",
+      "model": "openrouter/free"
     }
   ]
 }
 ```
 
-Then run:
 ```bash
 codesmith-batch batch.json
+codesmith-batch batch.json --model openai/gpt-oss-20b:free
 ```
 
-All files are generated and saved automatically!
+Batch outputs are written relative to the current directory.
 
-### Usage
+## Docker
 
-```bash
-# Single file
-codesmith-batch <output_file> "<prompt>"
-
-# Batch from JSON
-codesmith-batch <config.json>
-
-# With a specific OpenRouter model
-codesmith-batch <output_file> "<prompt>" --model openai/gpt-oss-20b:free
-```
-
-**See [AUTOMATION.md](docs/AUTOMATION.md) for complete automation guide**
-
-## Docker Usage
-
-The Docker image can run CodeSmith while using OpenRouter; no local model server is required.
-
-```bash
-# Build the image
-docker build -t codesmith-cli .
-
-# Run with your OpenRouter key
-docker run -it --rm \
-  -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-  -v $(pwd)/workspace:/workspace \
-  codesmith-cli
-```
-
-## Features in Detail
-
-### Streaming Support
-
-The CLI streams responses token-by-token as they're generated, providing real-time feedback:
-
-```
-> Write a hello world program in Rust
-```python
-fn main() {
-    println!("Hello, world!");
-}
-```
-```
-
-### Context Injection
-
-Include files in your prompts for code generation aware of your codebase:
-
-```
-@utils.py
-@config.json
-> Generate tests for the functions in utils.py
-```
-
-The utility files are automatically included in the prompt sent to the model.
-
-### Error Handling
-
-All operations include graceful error handling:
-
-- File not found errors
-- Permission issues
-- Command execution failures
-- OpenRouter connection problems
-- Timeout handling
-
-### Clean Output Formatting
-
-- Syntax highlighting for code blocks
-- Color-coded messages (info, success, error)
-- Organized section headers
-- Proper indentation and formatting
-
-## Performance Tips
-
-1. **Use context wisely**: Only include relevant files to keep prompts concise
-2. **Model selection**: The default is `openai/gpt-oss-20b:free`; choose another OpenRouter model with `--model` or use `/models`
-3. **Streaming**: Works best for faster feedback; disable with `--no-stream` if needed
-4. **Command timeouts**: Default is 30 seconds; adjust in code for long operations
-
-## Troubleshooting
-
-### "OPENROUTER_API_KEY is not set"
-
-Export an OpenRouter key before starting CodeSmith:
-
-```bash
-export OPENROUTER_API_KEY="your-key"
-```
-
-For Docker Compose, export the key on the host before starting the service:
+Docker Compose builds the image, passes the OpenRouter configuration, and mounts
+the repository at `/work`:
 
 ```bash
 export OPENROUTER_API_KEY="your-key"
 docker compose run --rm codesmith-cli
+docker compose run --rm codesmith-cli review
 ```
 
-### OpenRouter free-model limits
+To run CodeSmith against another local repository with the built image:
 
-OpenRouter currently allows 50 free-model requests per day without purchased
-credits. Purchasing at least $10 in credits raises the free-model limit to
-1,000 requests per day. OpenRouter credits use USD, and purchases may include a
-service fee. Limits are account-specific and can change.
-
-If the daily limit is reached, wait for the reset or use an account with
-available credits. A `429` response is handled and displayed as a friendly
-message explaining that the account or the selected provider may be rate
-limited.
-
-### Slow responses
-
-- Reduce context file size
-- Try another model from `/models`, or use `/models openrouter/free`. OpenRouter's
-  free router filters candidates for required capabilities such as tool calling.
-- Check your OpenRouter model and account limits
-- Reduce temperature for faster inference (in code)
-
-### Permission denied on file operations
-
-Ensure you have write permissions in the working directory:
 ```bash
-chmod 755 ./workspace
-ls -la | grep workspace
+docker build -t codesmith-cli .
+docker run -it --rm \
+  -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  -v /path/to/project:/work \
+  -w /work \
+  codesmith-cli
 ```
 
-### Port 11434 already in use
+The Docker image includes Git and ripgrep. No local model server is required.
 
-Change the port in docker-compose.yml:
-```yaml
-ports:
-  - "11435:11434"  # Change left number to unused port
+## Development
+
+Install the test dependency and run the suite:
+
+```bash
+python3 -m pip install -e '.[test]'
+python3 -m pytest -q
 ```
 
-## Architecture Details
+Key modules:
 
-### LLM Module (`src/codesmith/llm.py`)
+```text
+src/codesmith/runtime_cli.py  CLI parsing, terminal UI, and session commands
+src/codesmith/agent.py        Agent loop and tool schemas
+src/codesmith/context.py      Context budgeting, instructions, and sessions
+src/codesmith/tools.py        Repository-scoped file, Git, search, and shell tools
+src/codesmith/llm.py          OpenRouter providers
+src/codesmith/batch.py        Non-interactive batch generation
+```
 
-- **OpenRouterClient**: Manages communication with OpenRouter API
-- **Streaming**: Real-time token generation
-- **Error Handling**: Connection validation and timeout management
-- **Reasoning and tool calls**: Preserves OpenRouter reasoning details across tool iterations
+## Troubleshooting
 
-### Tools Module (`src/codesmith/tools.py`)
+### `OPENROUTER_API_KEY is not set`
 
-- **FileTools**: Read, write, and inspect files
-- **ContextInjector**: Embed file contents into prompts
+Export the key in the shell that starts CodeSmith. For Docker Compose, the key
+must be set on the host before running the service.
 
-### CLI Module (`src/codesmith/cli.py`)
+### A model cannot use repository tools
 
-- **CodeSmithCLI**: Main application class
-- **REPL Loop**: Interactive command processing
-- **Command Handling**: Dispatch to appropriate handlers
-- **Output Formatting**: Color-coded, organized output
+Use `/models` in an interactive session and select a model marked as supporting
+tool calling, or start CodeSmith with `--model openrouter/free`.
 
-## Future Enhancements
+### Repository search fails
 
-- [ ] Code execution sandboxing
-- [ ] Multi-file context management
-- [ ] Syntax highlighting for output
-- [ ] Command history and autocomplete
-- [ ] Custom prompt templates
-- [ ] Response caching
-- [ ] Model fine-tuning support
-- [ ] Plugin system for custom commands
+Install `rg` locally or use the Docker image, which already includes it.
 
-## License
+### A request is rate-limited
 
-MIT License - feel free to use and modify for your needs.
+Retry later, choose another model, or check the limits and credits associated
+with your OpenRouter account. CodeSmith reports HTTP 429 responses without
+assuming a particular account limit.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit pull requests.
-
-## Support
-
-For issues, questions, or suggestions, please create an issue in the repository.
-
----
-
-**Happy coding with CodeSmith!** 🚀
+Contributions and issue reports are welcome through the repository's pull
+request and issue trackers.
