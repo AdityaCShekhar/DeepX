@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Protocol
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Protocol, Sequence
 
 from .tools import Permission, RepositoryTools, ToolRegistry, ToolResult
 
@@ -19,6 +19,7 @@ class ModelResponse:
     content: str = ""
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     reasoning_details: Any = None
+    usage: Dict[str, Any] = field(default_factory=dict)
 
 
 class ModelProvider(Protocol):
@@ -39,6 +40,8 @@ class AgentState:
     completed: bool = False
     final_response: str | None = None
     stop_reason: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class _RepositoryTool:
@@ -65,32 +68,97 @@ def default_registry(repository: RepositoryTools) -> ToolRegistry:
 
 
 class AgentRuntime:
-    def __init__(self, model: ModelProvider, tools: ToolRegistry, max_iterations: int = 20, event_handler: Callable[[Dict[str, Any]], None] | None = None):
+    def __init__(
+        self,
+        model: ModelProvider,
+        tools: ToolRegistry,
+        max_iterations: int = 20,
+        event_handler: Callable[[Dict[str, Any]], None] | None = None,
+        message_preparer: Callable[[list, AgentState], list] | None = None,
+    ) -> None:
         self.model = model
         self.tools = tools
         self.max_iterations = max_iterations
         self.event_handler = event_handler
+        self.message_preparer = message_preparer
 
     def _emit(self, event: str, **data: Any) -> None:
         if self.event_handler:
             self.event_handler({"event": event, **data})
 
-    async def run(self, request: str, system_prompt: str | None = None) -> AgentState:
-        state = AgentState(user_request=request, max_iterations=self.max_iterations)
+    async def run(
+        self,
+        request: str,
+        system_prompt: str | None = None,
+        history: Sequence[Mapping[str, Any]] | None = None,
+        files_read: Iterable[str] | None = None,
+        files_modified: Iterable[str] | None = None,
+        context_summary: str | None = None,
+    ) -> AgentState:
+        state = AgentState(
+            user_request=request,
+            max_iterations=self.max_iterations,
+            files_read=set(files_read or ()),
+            files_modified=set(files_modified or ()),
+        )
         if system_prompt:
             state.messages.append({"role": "system", "content": system_prompt})
+        if context_summary:
+            state.messages.append(
+                {
+                    "role": "system",
+                    "content": "Compacted conversation state:\n" + context_summary,
+                }
+            )
+        for message in history or ():
+            # The current repository system prompt is rebuilt for every request;
+            # persisted system messages would duplicate or stale those rules.
+            if message.get("role") != "system":
+                state.messages.append(dict(message))
         state.messages.append({"role": "user", "content": request})
 
         while not state.completed and state.iteration < state.max_iterations:
             state.iteration += 1
             self._emit("iteration", iteration=state.iteration)
-            response = await self.model.generate(state.messages, self.tools.schemas())
+            self._emit("model_start", iteration=state.iteration)
+            try:
+                model_messages = (
+                    self.message_preparer(state.messages, state)
+                    if self.message_preparer
+                    else state.messages
+                )
+                response = await self.model.generate(
+                    model_messages, self.tools.schemas()
+                )
+            except BaseException as exc:
+                self._emit("model_error", iteration=state.iteration, error=str(exc))
+                raise
+            usage = getattr(response, "usage", None) or {}
+            state.input_tokens += int(
+                usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
+            )
+            state.output_tokens += int(
+                usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
+            )
             calls = getattr(response, "tool_calls", None) or []
+            self._emit(
+                "model_result",
+                iteration=state.iteration,
+                tool_call_count=len(calls),
+                has_content=bool(getattr(response, "content", "")),
+            )
             if not calls:
                 state.final_response = getattr(response, "content", "")
+                state.messages.append(
+                    {"role": "assistant", "content": state.final_response}
+                )
                 state.completed = True
                 state.stop_reason = "completed"
-                self._emit("completed", iteration=state.iteration)
+                self._emit(
+                    "completed",
+                    iteration=state.iteration,
+                    tool_call_count=len(state.tool_calls),
+                )
                 break
 
             # Keep the assistant tool-call message in the conversation. OpenRouter
@@ -119,7 +187,15 @@ class AgentRuntime:
                     result = await self.tools.execute(name, arguments)
                 state.tool_calls.append(call)
                 state.tool_results.append(result)
-                self._emit("tool_result", name=name, ok=result.ok, output=result.output)
+                self._emit(
+                    "tool_result",
+                    name=name,
+                    arguments=arguments,
+                    ok=result.ok,
+                    output=result.output,
+                    permission=result.permission.value,
+                    metadata=result.metadata or {},
+                )
                 if name == "read_file" and result.ok:
                     state.files_read.add(arguments.get("path", ""))
                 if name == "write_file" and result.ok:
@@ -135,5 +211,13 @@ class AgentRuntime:
         if not state.completed:
             state.stop_reason = "max_iterations"
             state.final_response = "Agent stopped after reaching the maximum iteration limit."
-            self._emit("stopped", reason=state.stop_reason)
+            state.messages.append(
+                {"role": "assistant", "content": state.final_response}
+            )
+            self._emit(
+                "stopped",
+                reason=state.stop_reason,
+                iteration=state.iteration,
+                tool_call_count=len(state.tool_calls),
+            )
         return state

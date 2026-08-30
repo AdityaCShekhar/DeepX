@@ -9,6 +9,18 @@ from typing import Any, Dict
 DEFAULT_CONFIG = {
     "model": {"provider": "openrouter", "model": "openai/gpt-oss-20b:free", "temperature": 0.1},
     "agent": {"max_iterations": 20, "auto_test": True},
+    "context": {
+        "max_tokens": 15_000,
+        "max_message_tokens": 4_500,
+        "max_tool_result_tokens": 3_000,
+        "max_summary_tokens": 2_000,
+        "max_file_chars": 10_000,
+        "max_referenced_files": 5,
+        "compact_threshold": 0.80,
+        "keep_recent_turns": 2,
+        "project_doc_max_bytes": 32_768,
+        "project_doc_fallback_filenames": [],
+    },
     "permissions": {"file_write": "confirm", "file_delete": "confirm", "shell": "confirm"},
     "search": {"backend": "ripgrep"},
 }

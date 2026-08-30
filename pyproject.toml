@@ -16,6 +16,11 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0,<9",
+]
+
 [project.scripts]
 codesmith = "codesmith.cli:main"
 codesmith-batch = "codesmith.batch:main"

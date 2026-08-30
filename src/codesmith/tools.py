@@ -172,12 +172,21 @@ class RepositoryTools:
     _blocked_commands = re.compile(r"(^|[;&|])\s*(rm\s+-rf\s+(/|~)|mkfs|shutdown|reboot|diskutil\s+eraseDisk)", re.I)
     _safe_commands = {"git", "pytest", "python", "python3", "mvn", "gradle", "npm", "go", "cargo", "ruff", "mypy"}
 
-    def __init__(self, root: str | Path = ".", confirm=None, command_timeout: int = 30):
+    def __init__(
+        self,
+        root: str | Path = ".",
+        confirm=None,
+        command_timeout: int = 30,
+        max_read_chars: int = 10000,
+    ) -> None:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ToolsError(f"Repository does not exist: {root}")
         self.confirm = confirm
         self.command_timeout = command_timeout
+        if max_read_chars <= 0:
+            raise ToolsError("max_read_chars must be positive")
+        self.max_read_chars = max_read_chars
 
     def _path(self, path: str) -> Path:
         return _inside(self.root, path)
@@ -233,7 +242,24 @@ class RepositoryTools:
             return ToolResult(False, f"Cannot read {path}: {exc}")
         start = max(1, start_line)
         end = min(len(lines), max(start, end_line))
-        return ToolResult(True, "\n".join(f"{i}: {lines[i - 1]}" for i in range(start, end + 1)), metadata={"path": str(target), "start_line": start, "end_line": end})
+        output = "\n".join(f"{i}: {lines[i - 1]}" for i in range(start, end + 1))
+        truncated = len(output) > self.max_read_chars
+        if truncated:
+            marker = "\n... [file output truncated; use a narrower line range]"
+            output = (output[: max(0, self.max_read_chars - len(marker))] + marker)[
+                : self.max_read_chars
+            ]
+        return ToolResult(
+            True,
+            output,
+            metadata={
+                "path": str(target),
+                "start_line": start,
+                "end_line": end,
+                "truncated": truncated,
+                "total_bytes": len(data),
+            },
+        )
 
     def search_code(self, query: str, path: str = ".", context: int = 1) -> ToolResult:
         try:

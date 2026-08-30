@@ -168,6 +168,62 @@ prompt only:
 > Write tests for @utils.py and @models.py
 ```
 
+Interactive sessions retain recent questions, final answers, OpenRouter
+reasoning details, and relevant file state, so follow-up prompts can refer to
+earlier work. CodeSmith uses token-based budgets and automatically summarizes
+older turns when the configured compaction threshold is reached. The summary is
+created with a normal OpenRouter model request; if that request fails, CodeSmith
+uses a deterministic local fallback.
+
+CodeSmith saves sessions under `~/.codesmith/sessions/`, grouped by repository.
+Use the context commands to manage them:
+
+```text
+/status            Show context and OpenRouter token usage
+/compact           Summarize older context now
+/mention PATH      Attach a file to the next prompt
+/resume [ID]       Resume a saved repository session
+/new               Start a new saved conversation
+/clear             Clear the current conversation
+```
+
+`/compact` makes an additional OpenRouter request and may consume billable or
+quota-limited tokens. CodeSmith does not call OpenAI's provider-specific
+`/responses/compact` endpoint.
+
+### Project instructions
+
+CodeSmith loads instruction files in increasing precedence:
+
+1. `$CODESMITH_HOME/AGENTS.override.md`, or `$CODESMITH_HOME/AGENTS.md`
+   (`CODESMITH_HOME` defaults to `~/.codesmith`).
+2. The legacy repository `.codesmith/rules.md`, when present.
+3. `AGENTS.override.md` or `AGENTS.md` from the repository root down to the
+   active working directory. A configured fallback filename can be used when
+   neither standard name exists.
+
+Instructions closer to the working directory appear later in the prompt and
+therefore take precedence. Combined project instructions default to a 32 KiB
+budget.
+
+Context settings can be overridden in `.codesmith/config.yaml`:
+
+```yaml
+context:
+  max_tokens: 15000
+  max_message_tokens: 4500
+  max_tool_result_tokens: 3000
+  max_summary_tokens: 2000
+  compact_threshold: 0.8
+  keep_recent_turns: 2
+  project_doc_max_bytes: 32768
+  project_doc_fallback_filenames: []
+```
+
+OpenRouter models use different tokenizers, so pre-request accounting is a
+conservative estimate. `/status` also reports the actual input and output usage
+returned by OpenRouter after completed requests.
+
 ### Utilities
 
 **List available models:**
@@ -175,11 +231,12 @@ prompt only:
 /models
 ```
 
-`/models` loads the current OpenRouter catalog and lists all free models. Models
-show their context size and whether tool calling is supported. Select one by
-number, or type `/models <number>` to select it directly. For repository tasks
-that need file inspection or writing, choose a model marked `Tool calling
-supported`.
+`/models` loads the current OpenRouter catalog and lists `:free` model variants
+that report text output and tool-calling support. Zero-priced previews and media
+models are excluded because they are not necessarily free chat-agent endpoints.
+Select one by number, or type `/models <number>` to select it directly. The
+`openrouter/free` entry lets OpenRouter choose an available free model that
+supports the tools included in the request.
 
 The interactive prompt uses the legacy CodeSmith layout with a cyan theme. Type
 `/` to open command suggestions, then press Enter to accept the first suggestion.
@@ -417,12 +474,14 @@ service fee. Limits are account-specific and can change.
 
 If the daily limit is reached, wait for the reset or use an account with
 available credits. A `429` response is handled and displayed as a friendly
-quota message by CodeSmith.
+message explaining that the account or the selected provider may be rate
+limited.
 
 ### Slow responses
 
 - Reduce context file size
-- Try another model from `/models`, or use `codesmith --model openrouter/free`
+- Try another model from `/models`, or use `/models openrouter/free`. OpenRouter's
+  free router filters candidates for required capabilities such as tool calling.
 - Check your OpenRouter model and account limits
 - Reduce temperature for faster inference (in code)
 
